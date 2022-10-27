@@ -5,67 +5,55 @@ from shapely import wkb
 import shapely
 import geopandas
 import datetime
+from decouple import config
 
-before1 = datetime.datetime.now()
 
-s = ('0106000020E6100000010000000103000000010000000A000000BAD81263F6ADE8BFD0767B634FD24440BECECCEE8AAEE8BF1528CA3C4CD24440919CC97EE9AFE8BF8AC3D8634ED24440E ... (74 characters truncated) ... 6E8BFA64CC1814BD24440C485FA811BABE8BFF9DE79346FD24440B824C13FE9A9E8BF001AB1DE6AD244409F21AAD735AFE8BF52C377B851D24440BAD81263F6ADE8BFD0767B634FD24440',)
-print(s[0])
-
-interns_conn = sqlalchemy.create_engine('postgresql://amit_m:Amit_2022!@10.0.1.4/interns_playground')
+interns_conn = sqlalchemy.create_engine(config('DB_CONNECTION_STRING'))
 connection = interns_conn.connect()
-
 metadata = sqlalchemy.MetaData()
-table = sqlalchemy.Table('map_layers_spain_with_union', metadata, autoload=True, autoload_with=interns_conn)
 
-command = f"SELECT wkb_geometry FROM spain_fomento_server83_623192eb8ef943ed9897f8ade36945c0_0"
-t = text(command)
-result = connection.execute(t).fetchall()
-print(type(result))
-multi_polygons = []
-for mp in result:
-    multi_polygons.append(wkb.loads(mp[0], hex=True))
-gs = geopandas.GeoSeries(multi_polygons)
-
-unary_union_time = datetime.datetime.now()
-nmp1 = gs.unary_union
-now = datetime.datetime.now()
-print('\n\n -----unary_union time: ', now - unary_union_time, '-----')
-cascaded_union_time = datetime.datetime.now()
-nmp2 = shapely.ops.cascaded_union(multi_polygons)
-now = datetime.datetime.now()
-print('\n\n -----cascaded_union time: ', now - cascaded_union_time, '-----')
-
-pushing_new_row_time = datetime.datetime.now()
-command = f"SELECT * FROM public.map_layers_spain WHERE table_name='spain_fomento_server83_623192eb8ef943ed9897f8ade36945c0_0';"
-t = text(command)
-result = connection.execute(t).fetchall()
-print(result[0]._mapping)
-row_to_insert = dict(result[0]._mapping)
-row_to_insert['union_multipoligon'] = nmp1.wkb_hex
-connection.execute(table.insert(), [row_to_insert])
-now = datetime.datetime.now()
-print('\n\n -----pushing_new_row time: ', now - pushing_new_row_time, '-----')
+class MP:
+    def __init__(self, layer_table_name):
+        self.layer_table_name = layer_table_name
+        self.multi_polygons_table = sqlalchemy.Table(config('LAYERS_MULTIPOLYGONS_TABLE'), metadata, autoload=True, autoload_with=interns_conn)
 
 
-before2 = datetime.datetime.now()
+# make multi-plygon from table
+def creat_layer_multi_polygon(self):
+    command = f"SELECT {config('GEOMETRY_COLUMN')} FROM {self.table_name}"
+    text_command = text(command)
+    result_layer_geometries = connection.execute(text_command).fetchall()
+    layer_geometries = []
+    for geometry in result_layer_geometries:
+        layer_geometries.append(wkb.loads(geometry[0], hex=True))
+    gs = geopandas.GeoSeries(layer_geometries)
+    self.layer_main_multi_poligon_to_push = gs.unary_union
 
-command = f"SELECT union_multipoligon FROM map_layers_spain_with_union WHERE NOT union_multipoligon='not yet' AND NOT union_multipoligon IS NULL;"
-t = text(command)
-result = connection.execute(t).fetchall()
-# print(result[0][0])
+# pushing the multi-polygon to multi-polygons table  !!!!!!!!!!!! TODO check if smaller table will be faster
+def push_main_multi_poligon_to_table(self):
+    command = f"SELECT * FROM public.map_layers_spain WHERE table_name={self.layer_table_name};"
+    text_command = text(command)
+    result_layer_info = connection.execute(text_command).fetchall()
+    row_to_insert = dict(result_layer_info[0]._mapping)
+    row_to_insert['union_multipoligon'] = self.layer_main_multi_poligon_to_push.wkb_hex
+    connection.execute(self.multi_polygons_table.insert(), [row_to_insert])
 
-mp = wkb.loads(result[0][0], hex=True)
-# print(mp)
+# query to the multi-polygon from multi-polygons table 
+# TODO add bbox_polygon parameter, modify the SELECT command
+def make_intersectin(self):
+    command = f"SELECT union_multipoligon FROM map_layers_spain_with_union WHERE NOT union_multipoligon='not yet' AND NOT union_multipoligon IS NULL;"
+    t = text(command)
+    result = connection.execute(t).fetchall()
+    layer_multi_poligon = wkb.loads(result[0][0], hex=True)
+    # calculate the intersection
+    bbox_polygon = Polygon([(0, 0), (0, 2), (2, 2), (2, 0)])
+    bbox_series = geopandas.GeoSeries([bbox_polygon],)
+    before = datetime.datetime.now()
+    print(bbox_series.intersection(layer_multi_poligon))
+    now = datetime.datetime.now()
+    print('\n\n ----- intersection time: ', now - before, '-----')
 
-bbox_polygon = Polygon([(0, 0), (0, 2), (2, 2), (2, 0)])
-s = geopandas.GeoSeries([bbox_polygon],)
 
 
-before = datetime.datetime.now()
-print(s.intersection(mp))
-now = datetime.datetime.now()
-print('\n\n -----time: ', now - before, '-----')
-print('\n\n -----time with query: ', now - before2, '-----')
-print('\n\n -----time with query: ', now - before1, '-----')
-
-
+new_mp = MP('spain_fomento_server83_623192eb8ef943ed9897f8ade36945c0_0')
+new_mp.make_intersectin()
